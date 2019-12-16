@@ -7,6 +7,7 @@
 . /etc/bashrc
 . /etc/profile.d/modules.sh
 module load openmpi/gcc/64
+module load cuda10.0/toolkit/10.0.130
 
 APP=./bitonic.out
 ARGS=${1}
