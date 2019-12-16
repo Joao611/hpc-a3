@@ -1,0 +1,13 @@
+#!/bin/bash
+#SBATCH --time=00:15:00
+#SBATCH --ntasks-per-node=1
+
+. /etc/bashrc
+. /etc/profile.d/modules.sh
+module load openmpi/gcc/64
+
+APP=./bitonic.out
+ARGS=${1}
+OMPI_OPTS="--mca btl ^usnic"
+
+$MPI_RUN $OMPI_OPTS $APP $ARGS
