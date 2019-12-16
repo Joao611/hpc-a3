@@ -1,10 +1,14 @@
 #include <iostream>
 #include <math.h>
 #include <stdlib.h> // random
+#include "mpi.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
 #define BASE_SEED 0x1234abcd
+
+static int rank = -1;
+static int numProcs = -1;
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char* file, int line, bool abort = true)
@@ -80,47 +84,53 @@ void checkArraySorted(int *a, const int N) {
 }
 
 int main(int argc, char *argv[]) {
-	int N = 1 << 20;
-	int *a;
+	MPI_Init(&argc, &argv);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
 
-	std::cout << "Allocating unified memory with " << N << " elements\n";
+	int globalN = 1 << 20;
+	const int localN = (globalN + numProcs - 1) / numProcs;
+	int *globalA = nullptr, *localA = nullptr;
+
+	std::cout << "P" << rank << ": Allocating unified memory with " << localN << " elements\n";
 
 	// Allocate Unified Memory – accessible from CPU or GPU
-	gpuErrChk(cudaMallocManaged(&a, N * sizeof(int)));
+	gpuErrChk(cudaMallocManaged(&localA, localN * sizeof(int)));
 
 	/* Initialize the random number generator for the given BASE_SEED
 	* plus an offset for the MPI rank of the node, such that on every
 	* node different numbers are generated.
 	*/
-	int rank = 0; // MPI placeholder
 	srand(BASE_SEED + rank);
 
-	std::cout << "Initializing array\n";
+	std::cout << "P" << rank << ": Initializing array\n";
 
-	for (int i = 0; i < N; i++) {
-		a[i] = rand();
+	for (int i = 0; i < localN; i++) {
+		localA[i] = rand();
 	}
 
-	std::cout << "Sorting array\n";
+	std::cout << "P" << rank << ": Sorting array\n";
 
-	// Run kernel on 1M elements on the GPU
-	/*int blockSize = 256;
-	int numBlocks = (N + blockSize - 1) / blockSize;*/
-	for (int k = 1; k <= N / 2; k *= 2) {
+	for (int k = 1; k <= localN / 2; k *= 2) {
 		for (int l = k; l >= 1; l /= 2) {
-			launchMergeStepKernel(a, N, k, l);
+			launchMergeStepKernel(localA, localN, k, l);
 			gpuErrChk(cudaDeviceSynchronize());
 		}
 	}
 	
-	std::cout << "Validating results\n";
+	std::cout << "P" << rank << ": Validating results\n";
 	// Check for errors (array should be sorted in ascending order)
-	checkArraySorted(a, N);
+	checkArraySorted(localA, localN);
+	if (rank == 0) {
+		// TODO: merge array
+		checkArraySorted(globalA, globalN);
+	}
 
 	// Free memory
-	gpuErrChk(cudaFree(a));
+	gpuErrChk(cudaFree(localA));
 
-	std::cout << "Execution finished\n";
+	std::cout << "P" << rank << ": Execution finished\n";
 
+	MPI_Finalize();
 	return 0;
 }
