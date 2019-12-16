@@ -95,7 +95,7 @@
   </ItemGroup>
   <ItemGroup>
     <None Include="..\bench_das5.sh" />
-    <None Include="..\main.job" />
+    <None Include="..\bitonic.job" />
     <None Include="..\makefile" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
