@@ -1,8 +1,0 @@
-﻿  Compiling CUDA source file kernel.cu...
-  
-  D:\Documentos\hpc-a3\hpc-a3>"D:\Programas\NVIDIA GPU Computing Toolkit\CUDA\v10.2\bin\nvcc.exe" -gencode=arch=compute_30,code=\"sm_30,compute_30\" --use-local-env -ccbin "D:\Programas\Visual Studio 2019 Community\VC\Tools\MSVC\14.24.28314\bin\HostX86\x64" -x cu  -I"D:\Programas\Microsoft SDKs\MPI\Include\\" -I"D:\Programas\Microsoft SDKs\MPI\Include\\x64" -I"D:\Programas\NVIDIA GPU Computing Toolkit\CUDA\v10.2\include" -I"D:\Programas\NVIDIA GPU Computing Toolkit\CUDA\v10.2\include" -I"D:\Programas\vcpkg\installed\x64-windows\include" -I"D:\Programas\NVIDIA GPU Computing Toolkit\CUDA\v10.2\include"  -G   --keep-dir x64\Debug -maxrregcount=0  --machine 64 --compile -cudart static  -g   -DWIN32 -DWIN64 -D_DEBUG -D_CONSOLE -D_MBCS -Xcompiler "/EHsc /W3 /nologo /Od /Fdx64\Debug\vc142.pdb /FS /Zi /RTC1 /MDd " -o x64\Debug\kernel.cu.obj "D:\Documentos\hpc-a3\hpc-a3\kernel.cu" 
-  kernel.cu
-D:/Documentos/hpc-a3/hpc-a3/kernel.cu(39): warning C4018: '>=': signed/unsigned mismatch
-D:/Documentos/hpc-a3/hpc-a3/kernel.cu(126): warning C4244: 'initializing': conversion from 'double' to 'unsigned int', possible loss of data
-D:/Documentos/hpc-a3/hpc-a3/kernel.cu(127): warning C4244: 'initializing': conversion from 'double' to 'unsigned int', possible loss of data
-  hpc-a3.vcxproj -> D:\Documentos\hpc-a3\x64\Debug\hpc-a3.exe

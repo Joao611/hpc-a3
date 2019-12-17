@@ -1,15 +1,26 @@
 #include <iostream>
 #include <math.h>
 #include <stdlib.h> // random
+#include <sstream>
 #include "assert.h"
 #include "mpi.h"
 #include "cuda_runtime.h"
 #include "device_launch_parameters.h"
 
-#define BASE_SEED 0x1234abcd
+#define PRINT_INTERVAL 10000
+#define LINE_SEPARATOR "-------------------------------------\n"
 
 static int rank = -1;
 static int numProcs = -1;
+
+// Program arguments.
+enum ExecMode {
+	CPU,
+	GPU
+};
+static ExecMode execMode = GPU;
+static uint64_t globalN = 0;
+static unsigned int baseSeed = 0;
 
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char* file, int line, bool abort = true) {
@@ -33,7 +44,7 @@ void swap(T &a, T &b) {
 
 // It must be a power of 2 greater or equal to the number of processes.
 // Power of 2 test checks if only one bit is set and is adapted from https://stackoverflow.com/a/108360/11539572
-void assertInputConditions(unsigned int globalN) {
+void assertInputConditions(uint64_t globalN) {
 	assert(globalN > 0 && globalN >= numProcs
 		&& (globalN & (globalN - 1)) == 0);
 }
@@ -79,8 +90,8 @@ inline void launchMergeStepKernel(unsigned int *a, const int aLength, const int 
 	mergeStep << <gridSize, blockSize >> > (a, aLength, k, l);
 }
 
-bool isArraySorted(unsigned int *a, const int N) {
-	for (int i = 1; i < N; i++) {
+bool isArraySorted(unsigned int *a, const uint64_t n) {
+	for (int i = 1; i < n; i++) {
 		if (a[i-1] > a[i]) {
 			std::cout << "ERROR: Array not sorted at [" << i - 1 << "] = " << a[i-1] << " and [" << i << "] = " << a[i] << std::endl;
 			return false;
@@ -89,16 +100,65 @@ bool isArraySorted(unsigned int *a, const int N) {
 	return true;
 }
 
-int main(int argc, char *argv[]) {
-	MPI_Init(&argc, &argv);
-	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
-	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
+void handleUsage(int argc) {
+	if (argc != 4) {
+		if (rank == 0) {
+			printf("Usage:\n\tmpirun [-np X] bitonic.out mode exponent base_seed\n");
+		}
+		MPI_Finalize();
+		exit(1);
+	}
+}
 
-	int globalN = 1 << 20;
+/**
+ * Initialize MPI and related variables and print header.
+ */
+void init(int *argc, char **argv[]) {
+	int  namelen;
+	char processor_name[MPI_MAX_PROCESSOR_NAME];
+
+	MPI_Init(argc, argv);
+	MPI_Comm_size(MPI_COMM_WORLD, &numProcs);
+	MPI_Comm_rank(MPI_COMM_WORLD, &rank);
+	MPI_Get_processor_name(processor_name, &namelen);
+	handleUsage(*argc);
+
+	execMode = ((*argv)[1] == "gpu") ? GPU : CPU;
+	std::istringstream iss1((*argv)[2]);
+	unsigned int exponent = 0;
+	iss1 >> exponent;
+	globalN = (uint64_t) 1 << exponent;
+	std::istringstream iss2((*argv)[3]);
+	iss2 >> baseSeed;
+
+	if (rank == 0) {
+		std::cout << "Name: " << processor_name << "\n";
+		std::cout << "Number of processes: " << numProcs << "\n";
+		std::cout << "Execution mode: " << (execMode == GPU ? "GPU\n" : "CPU\n");
+		std::cout << "Array size: 2^" << exponent << " = " << globalN << "\n";
+		std::cout << LINE_SEPARATOR;
+	}
+}
+
+void printResults(unsigned int *a, const int n, const double startTime, const double cudaTime, const double endTime) {
+	std::cout << LINE_SEPARATOR;
+	std::cout << "Sorted array:\n";
+	for (int i = 0; i < n; i += PRINT_INTERVAL) {
+		std::cout << a[i] << " ";
+	}
+	std::cout << "\n" << LINE_SEPARATOR;
+	std::cout << "CUDA processing time: " << cudaTime - startTime << "s\n";
+	std::cout << "Global processing time: " << endTime - startTime << "s\n";
+	std::cout << LINE_SEPARATOR;
+}
+
+int main(int argc, char *argv[]) {
+	init(&argc, &argv);
+	double startTime = -1.0, cudaTime = -1.0, endTime = -1.0;
 	assertInputConditions(globalN);
 
 	// Round up, although redundant when globalN and numProcs are both powers of 2
-	const int localN = (globalN + numProcs - 1) / numProcs;
+	const uint64_t localN = (globalN + numProcs - 1) / numProcs;
 	unsigned int *globalA = nullptr, *localA = nullptr;
 
 	if (rank == 0) {
@@ -114,7 +174,7 @@ int main(int argc, char *argv[]) {
 	* plus an offset for the MPI rank of the node, such that on every
 	* node different numbers are generated.
 	*/
-	srand(BASE_SEED + rank);
+	srand(baseSeed + rank);
 
 	std::cout << "P" << rank << ": Initializing array" << std::endl;
 
@@ -126,34 +186,43 @@ int main(int argc, char *argv[]) {
 
 	std::cout << "P" << rank << ": Sorting array" << std::endl;
 
+	startTime = MPI_Wtime();
+	// Calculate parts of array in each node
 	for (int k = 1; k <= localN / 2; k *= 2) {
 		for (int l = k; l >= 1; l /= 2) {
 			launchMergeStepKernel(localA, localN, k, l);
 			gpuErrChk(cudaDeviceSynchronize());
 		}
 	}
-	
+	cudaTime = MPI_Wtime();
+	// Merge arrays from all nodes
+	MPI_Gather(localA, localN, MPI_UINT32_T, globalA, localN, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+	endTime = MPI_Wtime();
+
 	std::cout << "P" << rank << ": Validating results" << std::endl;
-	// Check for errors (array should be sorted in ascending order)
+	// Check for local errors (array should be sorted in ascending order)
 	if (isArraySorted(localA, localN)) {
 		std::cout << "P" << rank << ": Local array sorted successfully" << std::endl;
 	} else {
 		std::cout << "P" << rank << ": Local array sort failed" << std::endl;
 	}
 
-	MPI_Gather(localA, localN, MPI_UINT32_T, globalA, localN, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+	MPI_Barrier(MPI_COMM_WORLD);
+	std::cout << "P" << rank << ": Execution finished" << std::endl;
+	MPI_Barrier(MPI_COMM_WORLD);
+
+	// Check for global errors in merged array (should be sorted in ascending order)
 	if (rank == 0) {
 		if (isArraySorted(globalA, globalN)) {
 			std::cout << "Global array sorted successfully" << std::endl;
 		} else {
 			std::cout << "Global array sort failed" << std::endl;
 		}
+		printResults(globalA, globalN, startTime, cudaTime, endTime);
 	}
-	MPI_Barrier(MPI_COMM_WORLD);
 	
 	gpuErrChk(cudaFree(localA));
 
-	std::cout << "P" << rank << ": Execution finished" << std::endl;
 
 	MPI_Finalize();
 	return 0;
