@@ -2,6 +2,7 @@
 #include <math.h>
 #include <stdlib.h> // random
 #include <sstream>
+#include <string>
 #include "assert.h"
 #include "mpi.h"
 #include "cuda_runtime.h"
@@ -12,6 +13,9 @@
 
 static int rank = -1;
 static int numProcs = -1;
+
+#define ASCENDING true
+#define DESCENDING false
 
 // Program arguments.
 enum ExecMode {
@@ -35,7 +39,7 @@ inline unsigned int genRandomNumber(unsigned int lowBound, unsigned int highBoun
 }
 
 template<typename T>
-__device__
+__host__ __device__
 void swap(T &a, T &b) {
 	T tmp = a;
 	a = b;
@@ -49,8 +53,8 @@ void assertInputConditions(uint64_t globalN) {
 		&& (globalN & (globalN - 1)) == 0);
 }
 
-__device__
-void compAndSwap(unsigned int* a, const int startIdx, const int endIdx, const bool dirAscending) {
+__host__ __device__
+void compAndSwap(unsigned int* a, const uint64_t startIdx, const uint64_t endIdx, const bool dirAscending) {
 	if (dirAscending) {
 		if (a[startIdx] > a[endIdx]) {
 			swap(a[startIdx], a[endIdx]);
@@ -63,21 +67,21 @@ void compAndSwap(unsigned int* a, const int startIdx, const int endIdx, const bo
 }
 
 __global__
-void mergeStep(unsigned int *a, const int aLength, const int k, const int l) {
+void mergeStep(unsigned int *a, const int aLength, const uint64_t k, const uint64_t l) {
 	int tId = blockIdx.x * blockDim.x + threadIdx.x;
 	int stride = blockDim.x * gridDim.x;
-	for (int runId = tId; runId < aLength; runId += stride) {
-		int startIdx = (runId / l) * 2*l + (runId % l);
-		int endIdx = startIdx + l;
+	for (uint64_t runId = tId; runId < aLength; runId += stride) {
+		uint64_t startIdx = (runId / l) * 2*l + (runId % l);
+		uint64_t endIdx = startIdx + l;
 		if (endIdx < aLength) {
-			int zoneId = startIdx / (2 * k);
+			uint64_t zoneId = startIdx / (2 * k);
 			bool dirAscending = !(zoneId % 2);
 			compAndSwap(a, startIdx, endIdx, dirAscending);
 		}
 	}
 }
 
-inline void launchMergeStepKernel(unsigned int *a, const int aLength, const int k, const int l) {
+inline void launchMergeStepKernel(unsigned int *a, const int aLength, const uint64_t k, const uint64_t l) {
 	int blockSize;   // The launch configurator returned block size 
 	int minGridSize; // The minimum grid size needed to achieve the 
 					 // maximum occupancy for a full device launch 
@@ -123,39 +127,75 @@ void init(int *argc, char **argv[]) {
 	MPI_Get_processor_name(processor_name, &namelen);
 	handleUsage(*argc);
 
-	execMode = ((*argv)[1] == "gpu") ? GPU : CPU;
+	execMode = ((*argv)[1] == std::string("gpu")) ? GPU : CPU;
 	std::istringstream iss1((*argv)[2]);
 	unsigned int exponent = 0;
 	iss1 >> exponent;
 	globalN = (uint64_t) 1 << exponent;
 	std::istringstream iss2((*argv)[3]);
-	iss2 >> baseSeed;
+	iss2 >> std::hex >> baseSeed;
 
 	if (rank == 0) {
 		std::cout << "Name: " << processor_name << "\n";
 		std::cout << "Number of processes: " << numProcs << "\n";
 		std::cout << "Execution mode: " << (execMode == GPU ? "GPU\n" : "CPU\n");
 		std::cout << "Array size: 2^" << exponent << " = " << globalN << "\n";
+		std::cout << "Base seed: 0x" << std::hex << baseSeed << std::dec << "\n";
 		std::cout << LINE_SEPARATOR;
 	}
+
+	assertInputConditions(globalN);
+	MPI_Barrier(MPI_COMM_WORLD);
 }
 
-void printResults(unsigned int *a, const int n, const double startTime, const double cudaTime, const double endTime) {
+void printResults(unsigned int *a, uint64_t n, const double startTime, const double localProcTime, const double endTime) {
 	std::cout << LINE_SEPARATOR;
 	std::cout << "Sorted array:\n";
 	for (int i = 0; i < n; i += PRINT_INTERVAL) {
 		std::cout << a[i] << " ";
 	}
 	std::cout << "\n" << LINE_SEPARATOR;
-	std::cout << "CUDA processing time: " << cudaTime - startTime << "s\n";
+	std::cout << "Local (P0) processing time: " << localProcTime - startTime << "s\n";
 	std::cout << "Global processing time: " << endTime - startTime << "s\n";
 	std::cout << LINE_SEPARATOR;
 }
 
+void localSortGPU(unsigned int *localA, uint64_t localN) {
+	for (uint64_t k = 1; k <= localN / 2; k *= 2) {
+		for (uint64_t l = k; l >= 1; l /= 2) {
+			launchMergeStepKernel(localA, localN, k, l);
+			gpuErrChk(cudaDeviceSynchronize());
+		}
+	}
+}
+
+void seqBitonicMerge(unsigned int *a, uint64_t i, uint64_t n, bool dir) {
+	if (n > 1) {
+		uint64_t m = n / 2;
+		for (uint64_t j = i; j < i + m; j++) {
+			compAndSwap(a, j, j + m, dir);
+		}
+		seqBitonicMerge(a, i, m, dir);
+		seqBitonicMerge(a, i + m, m, dir);
+	}
+}
+
+void seqBitonicSort(unsigned int *a, uint64_t i, uint64_t n, bool dir) {
+	if (n > 1) {
+		uint64_t m = n / 2;
+		seqBitonicSort(a, i, m, ASCENDING);
+		seqBitonicSort(a, i + m, m, DESCENDING);
+		seqBitonicMerge(a, i, n, dir);
+	}
+}
+
+void localSortCPU(unsigned int *localA, uint64_t localN) {
+	seqBitonicSort(localA, 0, localN, ASCENDING);
+}
+
 int main(int argc, char *argv[]) {
 	init(&argc, &argv);
-	double startTime = -1.0, cudaTime = -1.0, endTime = -1.0;
-	assertInputConditions(globalN);
+	double startTime = -1.0, localProcTime = -1.0, endTime = -1.0;
 
 	// Round up, although redundant when globalN and numProcs are both powers of 2
 	const uint64_t localN = (globalN + numProcs - 1) / numProcs;
@@ -188,13 +228,17 @@ int main(int argc, char *argv[]) {
 
 	startTime = MPI_Wtime();
 	// Calculate parts of array in each node
-	for (int k = 1; k <= localN / 2; k *= 2) {
-		for (int l = k; l >= 1; l /= 2) {
-			launchMergeStepKernel(localA, localN, k, l);
-			gpuErrChk(cudaDeviceSynchronize());
-		}
+	switch (execMode) {
+	case GPU:
+		localSortGPU(localA, localN);
+		break;
+	case CPU:
+		localSortCPU(localA, localN);
+		break;
+	default:
+		std::cerr << "P" << rank << ": wat\n";
 	}
-	cudaTime = MPI_Wtime();
+	localProcTime = MPI_Wtime();
 	// Merge arrays from all nodes
 	MPI_Gather(localA, localN, MPI_UINT32_T, globalA, localN, MPI_UINT32_T, 0, MPI_COMM_WORLD);
 	endTime = MPI_Wtime();
@@ -218,11 +262,10 @@ int main(int argc, char *argv[]) {
 		} else {
 			std::cout << "Global array sort failed" << std::endl;
 		}
-		printResults(globalA, globalN, startTime, cudaTime, endTime);
+		printResults(globalA, globalN, startTime, localProcTime, endTime);
 	}
 	
 	gpuErrChk(cudaFree(localA));
-
 
 	MPI_Finalize();
 	return 0;

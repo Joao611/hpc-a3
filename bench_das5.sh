@@ -1,5 +1,5 @@
 #!/bin/bash
-sbatch --nodes=1 main.job 18
+sbatch --nodes=1 main.job gpu 18 0x1234abcd
 sbatch --nodes=1 main.job 21
 sbatch --nodes=1 main.job 26
 sbatch --nodes=1 main.job 34
