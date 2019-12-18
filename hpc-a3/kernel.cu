@@ -193,6 +193,18 @@ void localSortCPU(unsigned int *localA, uint64_t localN) {
 	seqBitonicSort(localA, 0, localN, ASCENDING);
 }
 
+void freeResources(unsigned int* globalA, unsigned int *localA) {
+	if (execMode == GPU) {
+		gpuErrChk(cudaFree(localA));
+	} else {
+		delete[] localA;
+	}
+
+	if (rank == 0) {
+		delete[] globalA;
+	}
+}
+
 int main(int argc, char *argv[]) {
 	init(&argc, &argv);
 	double startTime = -1.0, localProcTime = -1.0, endTime = -1.0;
@@ -205,10 +217,16 @@ int main(int argc, char *argv[]) {
 		globalA = new unsigned int[globalN];
 	}
 
-	std::cout << "P" << rank << ": Allocating unified memory with " << localN << " elements" << std::endl;
+	std::cout << "P" << rank << ": Allocating "
+		<< (execMode == GPU ? "unified" : "system")
+		<< " memory with " << localN << " elements" << std::endl;
 
-	// Allocate Unified Memory – accessible from CPU or GPU
-	gpuErrChk(cudaMallocManaged(&localA, localN * sizeof(unsigned int)));
+	// Allocate Unified Memory - accessible from CPU or GPU
+	if (execMode == GPU) {
+		gpuErrChk(cudaMallocManaged(&localA, localN * sizeof(unsigned int)));
+	} else {
+		localA = new unsigned int[localN];
+	}
 
 	/* Initialize the random number generator for the given BASE_SEED
 	* plus an offset for the MPI rank of the node, such that on every
@@ -265,8 +283,7 @@ int main(int argc, char *argv[]) {
 		printResults(globalA, globalN, startTime, localProcTime, endTime);
 	}
 	
-	gpuErrChk(cudaFree(localA));
-
+	freeResources(globalA, localA);
 	MPI_Finalize();
 	return 0;
 }
