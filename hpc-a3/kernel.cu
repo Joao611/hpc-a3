@@ -220,6 +220,14 @@ void localSortCPU(unsigned int *localA, uint64_t localN) {
 	seqBitonicSort(localA, 0, localN, ASCENDING);
 }
 
+void freeResources(unsigned int* globalA, unsigned int *localA) {
+	delete[] localA;
+
+	if (rank == 0) {
+		delete[] globalA;
+	}
+}
+
 int main(int argc, char *argv[]) {
 	init(&argc, &argv);
 	double startTime = -1.0, localProcTime = -1.0, endTime = -1.0;
@@ -232,7 +240,9 @@ int main(int argc, char *argv[]) {
 		globalA = new unsigned int[globalN];
 	}
 
-	std::cout << "P" << rank << ": Allocating unified memory with " << localN << " elements" << std::endl;
+	std::cout << "P" << rank << ": Allocating "
+		<< (execMode == GPU ? "unified" : "system")
+		<< " memory with " << localN << " elements" << std::endl;
 
 	// Allocate local memory in CPU
 	localA = new unsigned int[localN];
@@ -292,8 +302,7 @@ int main(int argc, char *argv[]) {
 		printResults(globalA, globalN, startTime, localProcTime, endTime);
 	}
 	
-	delete[] localA;
-
+	freeResources(globalA, localA);
 	MPI_Finalize();
 	return 0;
 }
