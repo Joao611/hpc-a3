@@ -26,6 +26,20 @@ static ExecMode execMode = GPU;
 static uint64_t globalN = 0;
 static unsigned int baseSeed = 0;
 
+struct PsrsData {
+	uint64_t numChunks, chunkSize;
+	uint64_t sampleSize, sampleInterval;
+	uint64_t numPivots;
+
+	PsrsData(const uint64_t localN, const uint64_t localEffVram) {
+		chunkSize = localEffVram / sizeof(unsigned int);
+		numChunks = localN / chunkSize;
+		sampleSize = numChunks * numChunks;
+		sampleInterval = localN / (numChunks * numChunks);
+		numPivots = numChunks - 1;
+	}
+};
+
 #define gpuErrChk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 inline void gpuAssert(cudaError_t code, const char* file, int line, bool abort = true) {
 	if (code != cudaSuccess) {
@@ -175,10 +189,31 @@ void localBitonicSortGPU(unsigned int *localA, uint64_t localN) {
 	}
 }
 
-void sortPsrsChunksGPU(unsigned int *localA, uint64_t localN, uint64_t chunkSize) {
-	for (uint64_t start = 0; start < localN; start += chunkSize) {
-		unsigned int *chunk = localA + start * sizeof(unsigned int);
-		localBitonicSortGPU(chunk, chunkSize);
+void sortPsrsChunksGPU(unsigned int *localA, uint64_t localN, const PsrsData &psrsData) {
+	unsigned int *chunkGPU = nullptr;
+	const uint64_t chunkSizeBytes = psrsData.chunkSize * sizeof(unsigned int);
+	gpuErrChk(cudaMalloc(&chunkGPU, chunkSizeBytes));
+	for (uint64_t chunkStart = 0; chunkStart < localN; chunkStart += psrsData.chunkSize) {
+		unsigned int *chunkStartCPU = localA + chunkStart * sizeof(unsigned int);
+		gpuErrChk(cudaMemcpy(chunkGPU, chunkStartCPU, chunkSizeBytes, cudaMemcpyHostToDevice));
+		localBitonicSortGPU(chunkGPU, psrsData.chunkSize);
+		gpuErrChk(cudaMemcpy(chunkStartCPU, chunkGPU, chunkSizeBytes, cudaMemcpyDeviceToHost));
+	}
+	gpuErrChk(cudaFree(chunkGPU));
+}
+
+void createPsrsSample(unsigned int *sample, unsigned int *localA, const uint64_t localN, const PsrsData &psrsData) {
+	for (uint64_t chunk = 0; chunk < psrsData.numChunks; chunk++) {
+		for (uint64_t i = 0; i < psrsData.chunkSize; i += psrsData.sampleInterval) {
+			sample[chunk + i / psrsData.sampleInterval] = localA[chunk * psrsData.chunkSize + i];
+		}
+	}
+}
+
+void pickPivots(unsigned int *pivots, unsigned int *sample, const PsrsData psrsData, const uint64_t localN) {
+	const uint64_t p = psrsData.numChunks / 2;
+	for (int i = 0; i < psrsData.numPivots; i++) {
+		pivots[i] = sample[psrsData.numChunks * (i + 1) + p];
 	}
 }
 
@@ -189,11 +224,19 @@ void sortPsrsChunksGPU(unsigned int *localA, uint64_t localN, uint64_t chunkSize
 void localPsrsGPU(unsigned int *localA, uint64_t localN) {
 	uint64_t localVram = 0;
 	gpuErrChk(cudaMemGetInfo(&localVram, nullptr));
-	uint64_t localEffVram = closestLowerPowerOf2(localVram);
-	uint64_t chunkSize = localEffVram / sizeof(unsigned int);
+	const uint64_t localEffVram = closestLowerPowerOf2(localVram);
 
-	sortPsrsChunksGPU(localA, localN, chunkSize);
-	//createSample();
+	PsrsData psrsData(localN, localEffVram);
+	unsigned int *sample = new unsigned int[psrsData.sampleSize];
+	unsigned int *pivots = new unsigned int[psrsData.numPivots];
+
+	sortPsrsChunksGPU(localA, localN, psrsData);
+	createPsrsSample(sample, localA, localN, psrsData);
+	localBitonicSortGPU(sample, psrsData.sampleSize);
+	pickPivots(pivots, sample, psrsData, localN);
+
+	delete[] pivots;
+	delete[] sample;
 }
 
 void seqBitonicMerge(unsigned int *a, uint64_t i, uint64_t n, bool dir) {
