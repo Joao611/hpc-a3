@@ -38,6 +38,11 @@ inline unsigned int genRandomNumber(unsigned int lowBound, unsigned int highBoun
 	return rand() % (highBound - lowBound + 1) + lowBound;
 }
 
+uint64_t closestLowerPowerOf2(uint64_t n) {
+	uint64_t p = log2(n);
+	return pow(2, p);
+}
+
 template<typename T>
 __host__ __device__
 void swap(T &a, T &b) {
@@ -160,13 +165,35 @@ void printResults(unsigned int *a, uint64_t n, const double startTime, const dou
 	std::cout << LINE_SEPARATOR;
 }
 
-void localSortGPU(unsigned int *localA, uint64_t localN) {
+
+void localBitonicSortGPU(unsigned int *localA, uint64_t localN) {
 	for (uint64_t k = 1; k <= localN / 2; k *= 2) {
 		for (uint64_t l = k; l >= 1; l /= 2) {
 			launchMergeStepKernel(localA, localN, k, l);
 			gpuErrChk(cudaDeviceSynchronize());
 		}
 	}
+}
+
+void sortPsrsChunksGPU(unsigned int *localA, uint64_t localN, uint64_t chunkSize) {
+	for (uint64_t start = 0; start < localN; start += chunkSize) {
+		unsigned int *chunk = localA + start * sizeof(unsigned int);
+		localBitonicSortGPU(chunk, chunkSize);
+	}
+}
+
+/** Due to lack of VRAM, Parallel Sort by Regular Sampling is implemented.
+ * It further divides the array into chunks which are individually sorted by the GPU,
+ * requiring less VRAM at each instant.
+ */
+void localPsrsGPU(unsigned int *localA, uint64_t localN) {
+	uint64_t localVram = 0;
+	gpuErrChk(cudaMemGetInfo(&localVram, nullptr));
+	uint64_t localEffVram = closestLowerPowerOf2(localVram);
+	uint64_t chunkSize = localEffVram / sizeof(unsigned int);
+
+	sortPsrsChunksGPU(localA, localN, chunkSize);
+	//createSample();
 }
 
 void seqBitonicMerge(unsigned int *a, uint64_t i, uint64_t n, bool dir) {
@@ -207,8 +234,8 @@ int main(int argc, char *argv[]) {
 
 	std::cout << "P" << rank << ": Allocating unified memory with " << localN << " elements" << std::endl;
 
-	// Allocate Unified Memory – accessible from CPU or GPU
-	gpuErrChk(cudaMallocManaged(&localA, localN * sizeof(unsigned int)));
+	// Allocate local memory in CPU
+	localA = new unsigned int[localN];
 
 	/* Initialize the random number generator for the given BASE_SEED
 	* plus an offset for the MPI rank of the node, such that on every
@@ -230,7 +257,7 @@ int main(int argc, char *argv[]) {
 	// Calculate parts of array in each node
 	switch (execMode) {
 	case GPU:
-		localSortGPU(localA, localN);
+		localPsrsGPU(localA, localN);
 		break;
 	case CPU:
 		localSortCPU(localA, localN);
@@ -265,7 +292,7 @@ int main(int argc, char *argv[]) {
 		printResults(globalA, globalN, startTime, localProcTime, endTime);
 	}
 	
-	gpuErrChk(cudaFree(localA));
+	delete[] localA;
 
 	MPI_Finalize();
 	return 0;
