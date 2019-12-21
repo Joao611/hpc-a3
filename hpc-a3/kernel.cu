@@ -392,7 +392,7 @@ void movePsrsNewChunksToOutput(NewChunk *newChunks, unsigned int *localA, const 
 void localPsrsGPU(unsigned int *localA, uint64_t localN) {
 	uint64_t localVram = 0;
 	gpuErrChk(cudaMemGetInfo(&localVram, nullptr));
-	const uint64_t localEffVram = closestLowerPowerOf2(localVram) / 2;
+	const uint64_t localEffVram = closestLowerPowerOf2(localVram) / 4;
 
 	PsrsData psrsData(localN, localEffVram);
 	unsigned int *sample = new unsigned int[psrsData.sampleSize];
@@ -523,7 +523,15 @@ int main(int argc, char *argv[]) {
 	}
 	localProcTime = MPI_Wtime();
 	// Merge arrays from all nodes
-	MPI_Gather(localA, localN, MPI_UINT32_T, globalA, localN, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+	if (localN <= pow(2, 30)) {
+		MPI_Gather(localA, localN, MPI_UINT32_T, globalA, localN, MPI_UINT32_T, 0, MPI_COMM_WORLD);
+	} else {
+		MPI_Datatype uintGroup;
+		MPI_Type_contiguous(pow(2, 30), MPI_UINT32_T, &uintGroup);
+		MPI_Type_commit(&uintGroup);
+		int numberOfGroups = localN / (int) pow(2, 30);
+		MPI_Gather(localA, numberOfGroups, uintGroup, globalA, numberOfGroups, uintGroup, 0, MPI_COMM_WORLD);
+	}
 	endTime = MPI_Wtime();
 
 	std::cout << "P" << rank << ": Validating results" << std::endl;
