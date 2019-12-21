@@ -366,7 +366,6 @@ void sortPsrsNewChunksGPU(NewChunk *newChunks, const PsrsData &psrsData) {
 	for (uint64_t newChunk = 0; newChunk < psrsData.numChunks; newChunk++) {
 		unsigned int *chunkGPU = nullptr;
 		const uint64_t chunkSizeBytes = newChunks[newChunk].powerN * sizeof(unsigned int);
-		std::cout << "Chunk size bytes = " << chunkSizeBytes << std::endl; // TODO REMOVE
 		gpuErrChk(cudaMalloc(&chunkGPU, chunkSizeBytes));
 
 		gpuErrChk(cudaMemcpy(chunkGPU, newChunks[newChunk].chunk, chunkSizeBytes, cudaMemcpyHostToDevice));
@@ -393,7 +392,7 @@ void movePsrsNewChunksToOutput(NewChunk *newChunks, unsigned int *localA, const 
 void localPsrsGPU(unsigned int *localA, uint64_t localN) {
 	uint64_t localVram = 0;
 	gpuErrChk(cudaMemGetInfo(&localVram, nullptr));
-	const uint64_t localEffVram = localN * sizeof(unsigned int) / 4; //closestLowerPowerOf2(localVram) / 2;
+	const uint64_t localEffVram = closestLowerPowerOf2(localVram) / 2;
 
 	PsrsData psrsData(localN, localEffVram);
 	unsigned int *sample = new unsigned int[psrsData.sampleSize];
@@ -438,7 +437,7 @@ bool fitsInVram(const uint64_t localN) {
 }
 
 void localSortGPU(unsigned int *localA, const uint64_t localN) {
-	if (false) { //fitsInVram(localN)) {
+	if (fitsInVram(localN)) {
 		sortEntireArrayGPU(localA, localN);
 	} else {
 		localPsrsGPU(localA, localN);
